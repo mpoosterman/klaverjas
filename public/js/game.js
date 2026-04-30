@@ -8,7 +8,6 @@ const suitSym = s => ({ clubs: '♣', diamonds: '♦', hearts: '♥', spades: '�
 const suitNL  = s => ({ clubs: 'Klaveren', diamonds: 'Ruiten', hearts: 'Harten', spades: 'Schoppen' }[s] || s);
 const isRed   = s => s === 'hearts' || s === 'diamonds';
 
-// --- SCREEN ---
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   $(`screen-${name}`).classList.add('active');
@@ -68,7 +67,13 @@ function showError(msg) {
   setTimeout(() => el.classList.add('hidden'), 3000);
 }
 
-// --- TRUMP ---
+// --- TRUMP READY BUTTON ---
+$('btn-trump-ready').addEventListener('click', () => {
+  $('btn-trump-ready').classList.add('hidden');
+  showModal('bidding');
+});
+
+// --- TRUMP SUIT BUTTONS ---
 document.querySelectorAll('.suit-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     socket.emit('chooseTrump', { suit: btn.dataset.suit }, res => {
@@ -85,27 +90,18 @@ $('btn-new-round').addEventListener('click', () => {
 $('btn-play-again').addEventListener('click', () => location.reload());
 
 // --- SOCKET EVENTS ---
-socket.on('gameState', state => {
-  applyState(state);
-  render(state);
-});
-
+socket.on('gameState', state => { applyState(state); render(state); });
 socket.on('message', ({ text }) => showToast(text, 3000));
-
-socket.on('trickComplete', ({ winnerName }) => {
-  showToast(`${winnerName} wint de slag!`);
-});
-
+socket.on('trickComplete', ({ winnerName }) => showToast(`${winnerName} wint de slag!`));
 socket.on('roundOver', summary => {
   renderRoundSummary(summary);
   if (myState && myState.state === 'gameEnd') showModal('gameover');
   else showModal('round');
 });
 
-// --- STATE ---
 function applyState(state) { myState = state; }
 
-// --- RENDER ---
+// --- MAIN RENDER ---
 function render(state) {
   if (!state) return;
   if (state.state === 'waiting') { showScreen('waiting'); renderWaiting(state); return; }
@@ -114,12 +110,11 @@ function render(state) {
   renderLayouts(state);
   renderTrick(state);
   renderRoem(state);
-  renderBiddingModal(state);
+  renderMiddle(state);
 }
 
 function renderWaiting(state) {
-  const list = $('player-list');
-  list.innerHTML = state.players.map(p =>
+  $('player-list').innerHTML = state.players.map(p =>
     `<span class="player-chip">${p.nickname}${p.isMe ? ' (jij)' : ''}</span>`
   ).join('');
 }
@@ -142,64 +137,68 @@ function renderTopBar(state) {
   }
 }
 
-// Build the 4x4 grid for a player
+// Layout: 16 cards per player
+// Positions 0-3: bottom layer row 0 (deepest)
+// Positions 4-7: bottom layer row 1
+// Positions 8-11: top layer row 0
+// Positions 12-15: top layer row 1 (closest, revealed first)
+//
+// Display as 4 cols x 4 rows grid:
+// Visual row 0 (top of grid) = position row 3 (12-15) — top layer row 1
+// Visual row 1              = position row 2 (8-11)  — top layer row 0
+// Visual row 2              = position row 1 (4-7)   — bottom layer row 1
+// Visual row 3 (bottom)     = position row 0 (0-3)   — bottom layer row 0
+// Visual divider between col 1 and col 2 to show "two stacks of 2"
 function renderLayouts(state) {
   const isMyTurn = state.state === 'playing' && state.currentPlayerIndex === state.myIndex;
   const validPos = new Set(state.myValidPositions || []);
 
-  $('my-layout').innerHTML   = buildLayoutHTML(state.myLayout,  validPos, isMyTurn, state.trump, false);
-  $('opp-layout').innerHTML  = buildLayoutHTML(state.oppLayout, new Set(), false,   state.trump, true);
+  $('my-layout').innerHTML  = buildLayoutHTML(state.myLayout,  validPos, isMyTurn, state.trump);
+  $('opp-layout').innerHTML = buildLayoutHTML(state.oppLayout, new Set(), false, state.trump);
 
-  // Labels
-  const me = state.players[state.myIndex];
+  const me  = state.players[state.myIndex];
   const opp = state.players[1 - state.myIndex];
-  $('my-label').textContent  = `Jij (${me ? me.nickname : ''})`;
+  $('my-label').textContent  = me ? me.nickname : 'Jij';
   $('my-label').className    = 'player-label' + (state.currentPlayerIndex === state.myIndex ? ' active' : '');
   $('opp-label').textContent = opp ? opp.nickname : '';
   $('opp-label').className   = 'player-label' + (state.currentPlayerIndex === (1 - state.myIndex) ? ' active' : '');
 
-  // Attach click handlers
   $('my-layout').querySelectorAll('.card-face.playable').forEach(el => {
     el.addEventListener('click', () => {
-      const position = parseInt(el.dataset.position);
-      socket.emit('playCard', { position }, res => {
+      socket.emit('playCard', { position: parseInt(el.dataset.position) }, res => {
         if (res && res.error) showToast(res.error);
       });
     });
   });
 }
 
-// layout is array of 16: null (played) | { faceUp: false } (hidden) | { suit, rank, faceUp: true }
-// Positions 0-3: bottom layer row 0, 4-7: bottom layer row 1, 8-11: top layer row 0, 12-15: top layer row 1
-// We display from top of screen to bottom: row 3 (top), row 2, row 1, row 0 (bottom)
-// Grid rows in HTML: row index 0 = first row in grid = topmost visually
-function buildLayoutHTML(layout, validPos, isMyTurn, trump, isOpp) {
+function buildLayoutHTML(layout, validPos, isMyTurn, trump) {
   if (!layout) return '';
+  const rowOrder = [3, 2, 1, 0]; // display top-to-bottom: row 3 first (top layer)
   let html = '';
-  // Row order for display: rows 3,2,1,0 (so row 3 = top layer row 1 = closest to player = bottom of screen)
-  // For opponent (rotated 180), same array order works since CSS rotates the grid
-  const rowOrder = [3, 2, 1, 0]; // grid row 0 = position row 3
   for (const row of rowOrder) {
     for (let col = 0; col < 4; col++) {
       const pos = row * 4 + col;
       const card = layout[pos];
-      html += cardHTML(card, pos, validPos.has(pos) && isMyTurn, trump);
+      // Add visual gap between col 1 and col 2 to show two stacks
+      const marginLeft = col === 2 ? 'margin-left:10px;' : '';
+      html += cardHTML(card, pos, validPos.has(pos) && isMyTurn, trump, marginLeft);
     }
   }
   return html;
 }
 
-function cardHTML(card, position, playable, trump) {
+function cardHTML(card, position, playable, trump, extraStyle = '') {
   if (card === null) {
-    return `<div class="card card-empty" data-position="${position}"></div>`;
+    return `<div class="card card-empty" data-position="${position}" style="${extraStyle}"></div>`;
   }
   if (!card.faceUp) {
-    return `<div class="card card-back" data-position="${position}"></div>`;
+    return `<div class="card card-back" data-position="${position}" style="${extraStyle}"></div>`;
   }
   const red = isRed(card.suit) ? ' red' : '';
   const tr  = card.suit === trump ? ' trump' : '';
   const pl  = playable ? ' playable' : '';
-  return `<div class="card card-face${red}${tr}${pl}" data-position="${position}">
+  return `<div class="card card-face${red}${tr}${pl}" data-position="${position}" style="${extraStyle}">
     <div class="corner corner-tl">${card.rank}<br>${suitSym(card.suit)}</div>
     <div class="card-center">${suitSym(card.suit)}</div>
     <div class="corner corner-br">${card.rank}<br>${suitSym(card.suit)}</div>
@@ -214,12 +213,12 @@ function renderTrick(state) {
     const red = isRed(card.suit) ? ' red' : '';
     const tr  = state.trump && card.suit === state.trump ? ' trump' : '';
     return `<div class="played-wrap">
+      <span class="played-by">${p ? p.nickname : ''}</span>
       <div class="card card-face${red}${tr}" style="cursor:default;">
         <div class="corner corner-tl">${card.rank}<br>${suitSym(card.suit)}</div>
         <div class="card-center">${suitSym(card.suit)}</div>
         <div class="corner corner-br">${card.rank}<br>${suitSym(card.suit)}</div>
       </div>
-      <span class="played-by">${p ? p.nickname : ''}</span>
     </div>`;
   }).join('');
 }
@@ -228,33 +227,38 @@ function renderRoem(state) {
   const roem = state.myRoem || [];
   if (!roem.length || !state.trump) { $('my-roem-display').textContent = ''; return; }
   const total = roem.reduce((s, r) => s + r.points, 0);
-  $('my-roem-display').textContent = `Jouw roem: ${roem.map(r => r.description).join(' · ')} = ${total} pt`;
+  $('my-roem-display').textContent = `Roem: ${roem.map(r => r.description).join(' · ')} = ${total} pt`;
 }
 
-function renderBiddingModal(state) {
-  if (!state.state.startsWith('bidding')) { hideModal('bidding'); return; }
-  const bidder = state.players[state.biddingPlayerIndex];
-  if (!bidder) return;
+// Show/hide the trump ready button and waiting message in the middle
+function renderMiddle(state) {
+  const btn = $('btn-trump-ready');
+  const waitMsg = $('waiting-trump-msg');
 
-  if (bidder.isMe) {
-    // Show my 4 visible cards in the preview
+  if (state.state.startsWith('bidding')) {
+    const bidder = state.players[state.biddingPlayerIndex];
+    if (bidder && bidder.isMe) {
+      btn.classList.remove('hidden');
+      waitMsg.classList.add('hidden');
+    } else {
+      btn.classList.add('hidden');
+      waitMsg.classList.remove('hidden');
+      waitMsg.textContent = bidder ? `${bidder.nickname} kiest troef…` : '';
+    }
+    // Pre-fill bidding modal preview
     const visible = (state.myLayout || [])
-      .map((c, i) => ({ card: c, pos: i }))
-      .filter(({ card }) => card && card.faceUp);
-
-    $('bidding-preview').innerHTML = visible.map(({ card }) => {
+      .filter(c => c && c.faceUp);
+    $('bidding-preview').innerHTML = visible.map(card => {
       const red = isRed(card.suit) ? ' red' : '';
-      return `<div class="card card-face${red}" style="cursor:default;width:52px;height:74px;font-size:0.85rem;">
+      return `<div class="card card-face${red}" style="cursor:default;width:50px;height:70px;">
         <div class="corner corner-tl" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
-        <div class="card-center" style="font-size:1.1rem">${suitSym(card.suit)}</div>
+        <div class="card-center" style="font-size:1rem">${suitSym(card.suit)}</div>
         <div class="corner corner-br" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
       </div>`;
     }).join('');
-
-    showModal('bidding');
   } else {
-    hideModal('bidding');
-    $('turn-display').textContent = `${bidder.nickname} kiest troef…`;
+    btn.classList.add('hidden');
+    waitMsg.classList.add('hidden');
   }
 }
 
@@ -263,7 +267,7 @@ function renderRoundSummary(summary) {
   const playingName = names[summary.playingTeam];
   const result = summary.playingTeamWon
     ? `${playingName} wint de ronde! 🎉`
-    : `${playingName} verliest — punten gaan naar de tegenstander!`;
+    : `${playingName} verliest — punten naar de tegenstander!`;
 
   let html = `<p style="color:var(--gold);margin-bottom:1rem;text-align:center;">${result}</p>`;
   html += `<div class="summary-row"><span>Slagpunten</span><span>${summary.cardPoints[0]} – ${summary.cardPoints[1]}</span></div>`;

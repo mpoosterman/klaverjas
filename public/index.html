@@ -54,22 +54,26 @@
     </div>
 
     <div id="game-area">
-      <!-- Opponent's table (top, mirrored) -->
+      <!-- Left: my deck -->
+      <div id="my-area">
+        <div class="player-label" id="my-label">Jij</div>
+        <div class="table-layout" id="my-layout"></div>
+        <div id="my-roem-display"></div>
+      </div>
+
+      <!-- Middle: trick + trump button -->
+      <div id="middle-area">
+        <div id="trick-area">
+          <div id="trick-cards"></div>
+        </div>
+        <button id="btn-trump-ready" class="hidden">Ik ben klaar<br>om troef te kiezen</button>
+        <div id="waiting-trump-msg" class="waiting-trump hidden"></div>
+      </div>
+
+      <!-- Right: opponent deck -->
       <div id="opp-area">
         <div class="player-label" id="opp-label"></div>
         <div class="table-layout" id="opp-layout"></div>
-      </div>
-
-      <!-- Trick area in the middle -->
-      <div id="trick-area">
-        <div id="trick-cards"></div>
-      </div>
-
-      <!-- My table (bottom) -->
-      <div id="my-area">
-        <div class="table-layout" id="my-layout"></div>
-        <div class="player-label" id="my-label">Jij</div>
-        <div id="my-roem-display"></div>
       </div>
     </div>
   </div>
