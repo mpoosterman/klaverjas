@@ -1,9 +1,9 @@
 'use strict';
 
-const { v4: uuidv4 } = require('uuid');
 const {
-  createDeck, shuffleDeck, dealCards,
-  trickWinner, trickPoints, validCards,
+  createDeck, shuffleDeck, dealTableLayout,
+  initialFaceUp, flipBeneath,
+  trickWinner, trickPoints, validMoves,
   detectRoem, totalRoemPoints
 } = require('./gameLogic');
 
@@ -13,13 +13,13 @@ function generateRoomCode() {
   return Math.random().toString(36).substring(2, 7).toUpperCase();
 }
 
-function createRoom(hostSocketId, nickname, numPlayers) {
+function createRoom(hostSocketId, nickname) {
   const code = generateRoomCode();
   const room = {
     code,
-    numPlayers,
+    numPlayers: 2,
     players: [{ id: hostSocketId, nickname, team: 0 }],
-    state: 'waiting', // waiting | bidding | playing | roundEnd | gameEnd
+    state: 'waiting',
     game: null
   };
   rooms.set(code, room);
@@ -28,14 +28,12 @@ function createRoom(hostSocketId, nickname, numPlayers) {
 
 function joinRoom(code, socketId, nickname) {
   const room = rooms.get(code);
-  if (!room) return { error: 'Room not found' };
-  if (room.players.length >= room.numPlayers) return { error: 'Room is full' };
-  if (room.state !== 'waiting') return { error: 'Game already started' };
-  if (room.players.some(p => p.nickname === nickname)) return { error: 'Nickname already taken' };
+  if (!room) return { error: 'Kamer niet gevonden' };
+  if (room.players.length >= 2) return { error: 'Kamer is vol' };
+  if (room.state !== 'waiting') return { error: 'Spel is al begonnen' };
+  if (room.players.some(p => p.nickname === nickname)) return { error: 'Naam al in gebruik' };
 
-  // Assign teams: 0,1,0,1 for 4p; 0,1,0 for 3p (team 0 has 2 members); 0,1 for 2p
-  const team = room.players.length % 2;
-  room.players.push({ id: socketId, nickname, team });
+  room.players.push({ id: socketId, nickname, team: 1 });
   return { room };
 }
 
@@ -59,30 +57,31 @@ function getRoomBySocket(socketId) {
 }
 
 function startGame(room) {
-  const n = room.players.length;
   const deck = shuffleDeck(createDeck());
-  const hands = dealCards(deck, n);
+  const [layout0, layout1] = dealTableLayout(deck);
 
-  // Detect roem for each player upfront
-  // Trump is not chosen yet — roem is declared after trump is chosen
+  // Phase 1: positions 12-15 of each player's top layer are face-up
+  const faceUp0 = initialFaceUp();
+  const faceUp1 = initialFaceUp();
+
   room.game = {
-    hands,
+    layouts: [layout0, layout1],       // layout[p][0..15] = card or null if played
+    faceUp: [faceUp0, faceUp1],        // faceUp[p][0..15] = bool
+    phase: 1,                           // 1=first 4 revealed, 2=all top layer revealed, 3=playing
     trump: null,
-    biddingPlayerIndex: 0,  // first player bids
+    biddingPlayerIndex: 0,
     currentPlayerIndex: 0,
     trick: [],
-    tricksWon: Array(n).fill(0),
-    pointsPerTeam: [0, 0],
-    roemPerTeam: [0, 0],
-    declaredRoem: Array(n).fill(null), // roem per player once trump known
     trickCount: 0,
     lastTrickWinner: null,
-    scores: [0, 0],  // cumulative game scores per team
-    playingTeam: null,  // team that bid
-    bidValue: null,
+    pointsPerTeam: [0, 0],
+    declaredRoem: [null, null],
+    scores: [0, 0],
+    playingTeam: null,
     roundHistory: []
   };
-  room.state = 'bidding';
+
+  room.state = 'bidding_phase1';
   return room;
 }
 
@@ -90,93 +89,94 @@ function chooseTrump(room, playerIndex, suit) {
   const g = room.game;
   g.trump = suit;
   g.playingTeam = room.players[playerIndex].team;
-  g.currentPlayerIndex = 0; // player 0 leads first trick
 
-  // Now detect roem for all players
-  for (let i = 0; i < room.players.length; i++) {
-    g.declaredRoem[i] = detectRoem(g.hands[i], suit);
+  // Phase 2: reveal remaining top layer cards (positions 8-11)
+  for (let p = 0; p < 2; p++) {
+    for (let i = 8; i < 12; i++) {
+      g.faceUp[p][i] = true;
+    }
   }
 
+  // Detect roem from all 8 visible top-layer cards per player
+  for (let p = 0; p < 2; p++) {
+    const visibleCards = g.layouts[p].filter((c, i) => g.faceUp[p][i] && c !== null);
+    g.declaredRoem[p] = detectRoem(visibleCards, suit);
+  }
+
+  g.phase = 3;
+  g.currentPlayerIndex = g.biddingPlayerIndex; // bidder leads first
   room.state = 'playing';
   return room;
 }
 
-function playCard(room, playerIndex, card) {
+function playCard(room, playerIndex, position) {
   const g = room.game;
-  if (g.currentPlayerIndex !== playerIndex) return { error: 'Not your turn' };
+  if (g.currentPlayerIndex !== playerIndex) return { error: 'Niet jouw beurt' };
 
-  const hand = g.hands[playerIndex];
-  const valid = validCards(hand, g.trick, g.trump);
-  const isValid = valid.some(c => c.suit === card.suit && c.rank === card.rank);
-  if (!isValid) return { error: 'Invalid card' };
+  const layout = g.layouts[playerIndex];
+  const faceUp = g.faceUp[playerIndex];
 
-  // Remove from hand
-  const cardIdx = hand.findIndex(c => c.suit === card.suit && c.rank === card.rank);
-  hand.splice(cardIdx, 1);
+  if (!faceUp[position] || layout[position] === null) return { error: 'Kaart niet speelbaar' };
 
-  g.trick.push({ card, playerIndex });
+  const valid = validMoves(layout, faceUp, g.trick, g.trump);
+  const isValid = valid.some(v => v.position === position);
+  if (!isValid) return { error: 'Ongeldige kaart' };
 
-  // Trick complete?
-  if (g.trick.length === room.players.length) {
+  const card = layout[position];
+
+  // Remove card from layout
+  g.layouts[playerIndex][position] = null;
+
+  // Flip card beneath
+  g.faceUp[playerIndex] = flipBeneath(position, g.faceUp[playerIndex]);
+
+  g.trick.push({ card, playerIndex, position });
+
+  // Trick complete when both players have played
+  if (g.trick.length === 2) {
     const winnerIdx = trickWinner(g.trick, g.trump);
     const pts = trickPoints(g.trick, g.trump);
     const winnerTeam = room.players[winnerIdx].team;
 
-    g.tricksWon[winnerIdx]++;
     g.pointsPerTeam[winnerTeam] += pts;
     g.lastTrickWinner = winnerIdx;
     g.trickCount++;
 
-    const isLastTrick = g.trickCount === Math.floor(32 / room.players.length);
-    if (isLastTrick) {
-      g.pointsPerTeam[winnerTeam] += 10; // last trick bonus
-    }
+    const isLastTrick = g.trickCount === 16;
+    if (isLastTrick) g.pointsPerTeam[winnerTeam] += 10;
 
     const completedTrick = [...g.trick];
     g.trick = [];
     g.currentPlayerIndex = winnerIdx;
 
-    if (isLastTrick) {
-      return { trickComplete: true, winnerIdx, completedTrick, roundOver: true };
-    }
-
-    return { trickComplete: true, winnerIdx, completedTrick, roundOver: false };
+    return { trickComplete: true, winnerIdx, completedTrick, roundOver: isLastTrick };
   }
 
-  // Next player
-  g.currentPlayerIndex = (playerIndex + 1) % room.players.length;
+  // Other player's turn
+  g.currentPlayerIndex = 1 - playerIndex;
   return { trickComplete: false };
 }
 
 function finalizeRound(room) {
   const g = room.game;
-  const n = room.players.length;
-
-  // Calculate roem per team
-  // If playing team wins, they keep their roem; defending gets theirs
-  // If playing team loses, ALL roem goes to defending team
-  const totalCardPoints = [0, 1].map(team => g.pointsPerTeam[team]);
   const playingTeam = g.playingTeam;
   const defendingTeam = 1 - playingTeam;
 
-  // Sum roem per team
+  const cardPts = [...g.pointsPerTeam];
   let roemByTeam = [0, 0];
-  for (let i = 0; i < n; i++) {
-    const team = room.players[i].team;
-    roemByTeam[team] += totalRoemPoints(g.declaredRoem[i] || []);
+  for (let i = 0; i < 2; i++) {
+    roemByTeam[room.players[i].team] += totalRoemPoints(g.declaredRoem[i] || []);
   }
 
-  // Determine if playing team won (more card points)
-  const playingTeamWon = totalCardPoints[playingTeam] > totalCardPoints[defendingTeam];
+  const playingTeamWon = cardPts[playingTeam] > cardPts[defendingTeam];
 
   let roundScores = [0, 0];
   if (playingTeamWon) {
-    roundScores[playingTeam]  = totalCardPoints[playingTeam]  + roemByTeam[playingTeam];
-    roundScores[defendingTeam] = totalCardPoints[defendingTeam] + roemByTeam[defendingTeam];
+    roundScores[playingTeam]   = cardPts[playingTeam]   + roemByTeam[playingTeam];
+    roundScores[defendingTeam] = cardPts[defendingTeam] + roemByTeam[defendingTeam];
   } else {
-    // Playing team lost — their roem transfers to defending team
-    roundScores[defendingTeam] = totalCardPoints[playingTeam] + totalCardPoints[defendingTeam]
-                                + roemByTeam[playingTeam] + roemByTeam[defendingTeam];
+    // Playing team loses — all points go to defending team
+    roundScores[defendingTeam] = cardPts[0] + cardPts[1] + roemByTeam[0] + roemByTeam[1];
     roundScores[playingTeam] = 0;
   }
 
@@ -186,7 +186,7 @@ function finalizeRound(room) {
   const summary = {
     playingTeam,
     playingTeamWon,
-    cardPoints: totalCardPoints,
+    cardPoints: cardPts,
     roemPoints: roemByTeam,
     roundScores,
     totalScores: [...g.scores],
@@ -197,67 +197,93 @@ function finalizeRound(room) {
   };
 
   g.roundHistory.push(summary);
-
-  // Check game end (first to 1500, or after agreed rounds)
   const gameOver = g.scores[0] >= 1500 || g.scores[1] >= 1500;
   room.state = gameOver ? 'gameEnd' : 'roundEnd';
-
   return summary;
 }
 
 function newRound(room) {
-  const n = room.players.length;
   const deck = shuffleDeck(createDeck());
-  const hands = dealCards(deck, n);
+  const [layout0, layout1] = dealTableLayout(deck);
+  const faceUp0 = initialFaceUp();
+  const faceUp1 = initialFaceUp();
 
   // Rotate bidding player
-  const nextBidder = (room.game.biddingPlayerIndex + 1) % n;
+  const nextBidder = 1 - room.game.biddingPlayerIndex;
 
   room.game = {
     ...room.game,
-    hands,
+    layouts: [layout0, layout1],
+    faceUp: [faceUp0, faceUp1],
+    phase: 1,
     trump: null,
     biddingPlayerIndex: nextBidder,
-    currentPlayerIndex: 0,
+    currentPlayerIndex: nextBidder,
     trick: [],
-    tricksWon: Array(n).fill(0),
-    pointsPerTeam: [0, 0],
-    roemPerTeam: [0, 0],
-    declaredRoem: Array(n).fill(null),
     trickCount: 0,
     lastTrickWinner: null,
-    playingTeam: null,
-    bidValue: null
+    pointsPerTeam: [0, 0],
+    declaredRoem: [null, null],
+    playingTeam: null
   };
-  room.state = 'bidding';
+
+  room.state = 'bidding_phase1';
   return room;
 }
 
 function getPublicState(room, forSocketId) {
   const myIndex = room.players.findIndex(p => p.id === forSocketId);
+  const oppIndex = 1 - myIndex;
   const g = room.game;
+
+  if (!g) {
+    return {
+      code: room.code,
+      state: room.state,
+      players: room.players.map(p => ({ nickname: p.nickname, isMe: p.id === forSocketId })),
+      myIndex
+    };
+  }
+
+  // Build layout view for each player
+  // For my layout: show card if face-up, else show 'hidden', else null if played
+  function layoutView(playerIdx, isMe) {
+    return g.layouts[playerIdx].map((card, i) => {
+      if (card === null) return null; // played/empty
+      if (g.faceUp[playerIdx][i]) return { ...card, faceUp: true };
+      return { faceUp: false }; // hidden
+    });
+  }
+
+  // Valid moves for current player
+  let myValidPositions = [];
+  if (g.currentPlayerIndex === myIndex && room.state === 'playing') {
+    const valid = validMoves(g.layouts[myIndex], g.faceUp[myIndex], g.trick, g.trump);
+    myValidPositions = valid.map(v => v.position);
+  }
 
   return {
     code: room.code,
     state: room.state,
-    numPlayers: room.numPlayers,
     players: room.players.map((p, i) => ({
       nickname: p.nickname,
       team: p.team,
       isMe: p.id === forSocketId,
-      tricksWon: g ? g.tricksWon[i] : 0,
-      cardCount: g ? g.hands[i].length : 0
+      cardsLeft: g.layouts[i].filter(c => c !== null).length
     })),
     myIndex,
-    myHand: g && myIndex >= 0 ? g.hands[myIndex] : [],
-    trump: g ? g.trump : null,
-    trick: g ? g.trick : [],
-    currentPlayerIndex: g ? g.currentPlayerIndex : null,
-    biddingPlayerIndex: g ? g.biddingPlayerIndex : null,
-    scores: g ? g.scores : [0, 0],
-    pointsPerTeam: g ? g.pointsPerTeam : [0, 0],
-    myRoem: g && myIndex >= 0 ? (g.declaredRoem[myIndex] || []) : [],
-    lastTrickWinner: g ? g.lastTrickWinner : null
+    myLayout: layoutView(myIndex, true),
+    oppLayout: layoutView(oppIndex, false),
+    trump: g.trump,
+    trick: g.trick,
+    currentPlayerIndex: g.currentPlayerIndex,
+    biddingPlayerIndex: g.biddingPlayerIndex,
+    scores: g.scores,
+    pointsPerTeam: g.pointsPerTeam,
+    myRoem: g.declaredRoem[myIndex] || [],
+    myValidPositions,
+    lastTrickWinner: g.lastTrickWinner,
+    trickCount: g.trickCount
   };
 }
 

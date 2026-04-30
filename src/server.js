@@ -25,13 +25,10 @@ function broadcast(room) {
 }
 
 io.on('connection', (socket) => {
-  console.log('Connected:', socket.id);
-
-  socket.on('createRoom', ({ nickname, numPlayers }, cb) => {
-    const room = createRoom(socket.id, nickname, numPlayers);
+  socket.on('createRoom', ({ nickname }, cb) => {
+    const room = createRoom(socket.id, nickname);
     socket.join(room.code);
     cb({ code: room.code, state: getPublicState(room, socket.id) });
-    broadcast(room);
   });
 
   socket.on('joinRoom', ({ code, nickname }, cb) => {
@@ -42,32 +39,32 @@ io.on('connection', (socket) => {
     cb({ state: getPublicState(room, socket.id) });
     broadcast(room);
 
-    // Auto-start when room is full
-    if (room.players.length === room.numPlayers) {
+    if (room.players.length === 2) {
       startGame(room);
       broadcast(room);
-      io.to(room.code).emit('message', { text: 'All players joined — game starting!' });
+      io.to(room.code).emit('message', { text: 'Beide spelers aanwezig — spel begint!' });
     }
   });
 
   socket.on('chooseTrump', ({ suit }, cb) => {
     const room = getRoomBySocket(socket.id);
-    if (!room || room.state !== 'bidding') return cb && cb({ error: 'Cannot choose trump now' });
+    if (!room || !room.state.startsWith('bidding')) return cb && cb({ error: 'Kan nu geen troef kiezen' });
     const playerIndex = room.players.findIndex(p => p.id === socket.id);
-    if (playerIndex !== room.game.biddingPlayerIndex) return cb && cb({ error: 'Not your turn to bid' });
+    if (playerIndex !== room.game.biddingPlayerIndex) return cb && cb({ error: 'Jij kiest niet de troef' });
 
     chooseTrump(room, playerIndex, suit);
-    io.to(room.code).emit('message', { text: `${room.players[playerIndex].nickname} chose ${suit} as trump` });
+    const suitNL = { clubs: 'Klaveren', diamonds: 'Ruiten', hearts: 'Harten', spades: 'Schoppen' };
+    io.to(room.code).emit('message', { text: `${room.players[playerIndex].nickname} kiest ${suitNL[suit]} als troef` });
     broadcast(room);
     cb && cb({});
   });
 
-  socket.on('playCard', ({ card }, cb) => {
+  socket.on('playCard', ({ position }, cb) => {
     const room = getRoomBySocket(socket.id);
-    if (!room || room.state !== 'playing') return cb && cb({ error: 'Cannot play now' });
+    if (!room || room.state !== 'playing') return cb && cb({ error: 'Kan nu niet spelen' });
     const playerIndex = room.players.findIndex(p => p.id === socket.id);
 
-    const result = playCard(room, playerIndex, card);
+    const result = playCard(room, playerIndex, position);
     if (result.error) return cb && cb({ error: result.error });
 
     broadcast(room);
@@ -92,7 +89,7 @@ io.on('connection', (socket) => {
 
   socket.on('newRound', (cb) => {
     const room = getRoomBySocket(socket.id);
-    if (!room || room.state !== 'roundEnd') return cb && cb({ error: 'Cannot start new round now' });
+    if (!room || room.state !== 'roundEnd') return cb && cb({ error: 'Kan geen nieuwe ronde starten' });
     newRound(room);
     broadcast(room);
     cb && cb({});
@@ -101,11 +98,11 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const room = removePlayer(socket.id);
     if (room) {
-      io.to(room.code).emit('message', { text: 'A player disconnected. Game paused.' });
+      io.to(room.code).emit('message', { text: 'Een speler heeft de verbinding verbroken.' });
       broadcast(room);
     }
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Klaverjas running on http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`Klaverjas draait op http://localhost:${PORT}`));
