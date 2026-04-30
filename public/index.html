@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Klaverjas Online</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+  <!-- LOBBY SCREEN -->
+  <div id="screen-lobby" class="screen active">
+    <div class="lobby-box">
+      <h1>Klaverjas</h1>
+      <p class="subtitle">The classic Dutch card game</p>
+
+      <div class="form-group">
+        <label>Your nickname</label>
+        <input id="nickname" type="text" maxlength="16" placeholder="Enter nickname" />
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="create">Create room</button>
+        <button class="tab" data-tab="join">Join room</button>
+      </div>
+
+      <div id="tab-create" class="tab-content active">
+        <div class="form-group">
+          <label>Number of players</label>
+          <div class="btn-group">
+            <button class="num-btn active" data-num="2">2</button>
+            <button class="num-btn" data-num="3">3</button>
+            <button class="num-btn" data-num="4">4</button>
+          </div>
+        </div>
+        <button id="btn-create" class="btn-primary">Create room</button>
+      </div>
+
+      <div id="tab-join" class="tab-content">
+        <div class="form-group">
+          <label>Room code</label>
+          <input id="room-code" type="text" maxlength="5" placeholder="e.g. AB12C" style="text-transform:uppercase;" />
+        </div>
+        <button id="btn-join" class="btn-primary">Join room</button>
+      </div>
+
+      <div id="lobby-error" class="error-msg hidden"></div>
+    </div>
+  </div>
+
+  <!-- WAITING SCREEN -->
+  <div id="screen-waiting" class="screen">
+    <div class="waiting-box">
+      <h2>Waiting for players</h2>
+      <p>Share this room code with your friends:</p>
+      <div class="room-code-display" id="display-code"></div>
+      <div id="player-list"></div>
+      <p class="muted" id="waiting-hint"></p>
+    </div>
+  </div>
+
+  <!-- GAME SCREEN -->
+  <div id="screen-game" class="screen">
+    <div id="game-layout">
+
+      <div id="top-bar">
+        <div id="score-display"></div>
+        <div id="trump-display"></div>
+        <div id="turn-display"></div>
+      </div>
+
+      <div id="opponents-area"></div>
+
+      <div id="trick-area">
+        <div id="trick-cards"></div>
+      </div>
+
+      <div id="my-area">
+        <div id="my-roem-display"></div>
+        <div id="my-hand"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- BIDDING MODAL -->
+  <div id="modal-bidding" class="modal hidden">
+    <div class="modal-box">
+      <h2>Choose trump suit</h2>
+      <p id="bidding-prompt"></p>
+      <div class="suit-buttons">
+        <button class="suit-btn" data-suit="clubs">♣ Clubs</button>
+        <button class="suit-btn" data-suit="diamonds">♦ Diamonds</button>
+        <button class="suit-btn" data-suit="hearts">♥ Hearts</button>
+        <button class="suit-btn" data-suit="spades">♠ Spades</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROUND OVER MODAL -->
+  <div id="modal-round" class="modal hidden">
+    <div class="modal-box">
+      <h2>Round over</h2>
+      <div id="round-summary"></div>
+      <button id="btn-new-round" class="btn-primary">Next round</button>
+    </div>
+  </div>
+
+  <!-- GAME OVER MODAL -->
+  <div id="modal-gameover" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="gameover-title"></h2>
+      <div id="gameover-summary"></div>
+      <button id="btn-play-again" class="btn-primary">Play again</button>
+    </div>
+  </div>
+
+  <!-- MESSAGE TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/game.js"></script>
+</body>
+</html>
