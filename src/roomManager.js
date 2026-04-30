@@ -3,7 +3,7 @@
 const {
   createDeck, shuffleDeck, dealStacks,
   trickWinner, trickPoints, validMoves,
-  getPlayableCards, detectRoem, totalRoemPoints
+  getPlayableCards, detectStukInTrick
 } = require('./gameLogic');
 
 const rooms = new Map();
@@ -15,8 +15,7 @@ function generateRoomCode() {
 function createRoom(hostSocketId, nickname) {
   const code = generateRoomCode();
   const room = {
-    code,
-    numPlayers: 2,
+    code, numPlayers: 2,
     players: [{ id: hostSocketId, nickname, team: 0 }],
     state: 'waiting',
     game: null
@@ -54,15 +53,11 @@ function getRoomBySocket(socketId) {
   return null;
 }
 
-// Build initial stacks for a player from dealStacks output
-// stacks[i] = [bottomCard, topCard]
-// We store as { bottom, top, bottomFaceUp, topFaceUp }
 function buildStacks(rawStacks, phase) {
   return rawStacks.map((pair, i) => ({
     bottom: pair[0],
     top: pair[1],
     bottomFaceUp: false,
-    // Phase 1: top row (0-3) top cards face up; phase 2: all top cards face up
     topFaceUp: phase === 2 ? true : i < 4
   }));
 }
@@ -73,16 +68,14 @@ function startGame(room) {
 
   room.game = {
     stacks: [buildStacks(raw0, 1), buildStacks(raw1, 1)],
-    phase: 1,
     trump: null,
     biddingPlayerIndex: 0,
     currentPlayerIndex: 0,
     trick: [],
-    pendingFlips: [],   // stack indices per player to flip after trick resolved
     trickCount: 0,
     lastTrickWinner: null,
     pointsPerTeam: [0, 0],
-    declaredRoem: [null, null],
+    stukWonByTeam: [false, false],
     scores: [0, 0],
     playingTeam: null,
     roundHistory: []
@@ -97,20 +90,11 @@ function chooseTrump(room, playerIndex, suit) {
   g.trump = suit;
   g.playingTeam = room.players[playerIndex].team;
 
-  // Phase 2: reveal top cards of bottom row (stacks 4-7) for both players
+  // Reveal top cards of bottom row (stacks 4-7)
   for (let p = 0; p < 2; p++) {
     for (let i = 4; i < 8; i++) {
       g.stacks[p][i].topFaceUp = true;
     }
-  }
-  g.phase = 2;
-
-  // Detect roem from all 8 visible top cards per player
-  for (let p = 0; p < 2; p++) {
-    const visibleCards = g.stacks[p]
-      .filter(s => s.topFaceUp && s.top !== null)
-      .map(s => s.top);
-    g.declaredRoem[p] = detectRoem(visibleCards, suit);
   }
 
   g.currentPlayerIndex = g.biddingPlayerIndex;
@@ -125,24 +109,18 @@ function playCard(room, playerIndex, stackIndex) {
   const stacks = g.stacks[playerIndex];
   const stack = stacks[stackIndex];
 
-  // Determine which layer is being played
   let layer = null;
   if (stack.top !== null && stack.topFaceUp) layer = 'top';
   else if (stack.top === null && stack.bottom !== null && stack.bottomFaceUp) layer = 'bottom';
-
   if (!layer) return { error: 'Geen speelbare kaart op deze positie' };
 
   const valid = validMoves(stacks, g.trick, g.trump);
-  const isValid = valid.some(v => v.stackIndex === stackIndex);
-  if (!isValid) return { error: 'Ongeldige kaart' };
+  if (!valid.some(v => v.stackIndex === stackIndex)) return { error: 'Ongeldige kaart' };
 
   const card = layer === 'top' ? stack.top : stack.bottom;
-
-  // Remove card from stack
   if (layer === 'top') {
     stack.top = null;
     stack.topFaceUp = false;
-    // Bottom card will flip AFTER the trick is resolved
   } else {
     stack.bottom = null;
     stack.bottomFaceUp = false;
@@ -162,13 +140,18 @@ function playCard(room, playerIndex, stackIndex) {
     const isLastTrick = g.trickCount === 16;
     if (isLastTrick) g.pointsPerTeam[winnerTeam] += 10;
 
-    // NOW flip bottom cards beneath played top cards
+    // Check stuk: K + Q of trump in this trick
+    const hasStuk = detectStukInTrick(g.trick, g.trump);
+    if (hasStuk) {
+      g.pointsPerTeam[winnerTeam] += 20;
+      g.stukWonByTeam[winnerTeam] = true;
+    }
+
+    // Flip bottom cards after trick resolved
     for (const played of g.trick) {
       if (played.layer === 'top') {
         const s = g.stacks[played.playerIndex][played.stackIndex];
-        if (s.bottom !== null) {
-          s.bottomFaceUp = true;
-        }
+        if (s.bottom !== null) s.bottomFaceUp = true;
       }
     }
 
@@ -176,34 +159,30 @@ function playCard(room, playerIndex, stackIndex) {
     g.trick = [];
     g.currentPlayerIndex = winnerIdx;
 
-    return { trickComplete: true, winnerIdx, completedTrick, roundOver: isLastTrick };
+    return { trickComplete: true, winnerIdx, completedTrick, roundOver: isLastTrick, hasStuk };
   }
 
-  // Other player's turn
   g.currentPlayerIndex = 1 - playerIndex;
   return { trickComplete: false };
 }
 
 function finalizeRound(room) {
   const g = room.game;
-  const playingTeam = g.playingTeam;
+  const playingTeam   = g.playingTeam;
   const defendingTeam = 1 - playingTeam;
 
-  const cardPts = [...g.pointsPerTeam];
-  let roemByTeam = [0, 0];
-  for (let i = 0; i < 2; i++) {
-    roemByTeam[room.players[i].team] += totalRoemPoints(g.declaredRoem[i] || []);
-  }
+  const cardPts = [...g.pointsPerTeam]; // already includes stuk and last trick bonus
 
   const playingTeamWon = cardPts[playingTeam] > cardPts[defendingTeam];
 
   let roundScores = [0, 0];
   if (playingTeamWon) {
-    roundScores[playingTeam]   = cardPts[playingTeam]   + roemByTeam[playingTeam];
-    roundScores[defendingTeam] = cardPts[defendingTeam] + roemByTeam[defendingTeam];
+    roundScores[0] = cardPts[0];
+    roundScores[1] = cardPts[1];
   } else {
-    roundScores[defendingTeam] = cardPts[0] + cardPts[1] + roemByTeam[0] + roemByTeam[1];
-    roundScores[playingTeam] = 0;
+    // Playing team loses — all points to defending team
+    roundScores[defendingTeam] = cardPts[0] + cardPts[1];
+    roundScores[playingTeam]   = 0;
   }
 
   g.scores[0] += roundScores[0];
@@ -212,13 +191,9 @@ function finalizeRound(room) {
   const summary = {
     playingTeam, playingTeamWon,
     cardPoints: cardPts,
-    roemPoints: roemByTeam,
+    stukWon: g.stukWonByTeam,
     roundScores,
-    totalScores: [...g.scores],
-    playerRoem: g.declaredRoem.map((roems, i) => ({
-      nickname: room.players[i].nickname,
-      roems: roems || []
-    }))
+    totalScores: [...g.scores]
   };
 
   g.roundHistory.push(summary);
@@ -234,7 +209,6 @@ function newRound(room) {
   room.game = {
     ...room.game,
     stacks: [buildStacks(raw0, 1), buildStacks(raw1, 1)],
-    phase: 1,
     trump: null,
     biddingPlayerIndex: nextBidder,
     currentPlayerIndex: nextBidder,
@@ -242,7 +216,7 @@ function newRound(room) {
     trickCount: 0,
     lastTrickWinner: null,
     pointsPerTeam: [0, 0],
-    declaredRoem: [null, null],
+    stukWonByTeam: [false, false],
     playingTeam: null
   };
 
@@ -263,7 +237,6 @@ function getPublicState(room, forSocketId) {
     };
   }
 
-  // Build stack view: for my stacks show full info; for opp show only face-up top card
   function stackView(stacks) {
     return stacks.map(s => ({
       topFaceUp:    s.topFaceUp,
@@ -297,7 +270,6 @@ function getPublicState(room, forSocketId) {
     biddingPlayerIndex: g.biddingPlayerIndex,
     scores: g.scores,
     pointsPerTeam: g.pointsPerTeam,
-    myRoem: g.declaredRoem[myIndex] || [],
     myValidStacks,
     lastTrickWinner: g.lastTrickWinner,
     trickCount: g.trickCount

@@ -116,42 +116,16 @@ function validMoves(stacks, trick, trump) {
   return playable;
 }
 
-function detectRoem(cards, trump) {
-  const roems = [];
-  const nonNull = cards.filter(Boolean);
-
-  const hasKing  = nonNull.some(c => c.suit === trump && c.rank === 'K');
-  const hasQueen = nonNull.some(c => c.suit === trump && c.rank === 'Q');
-  if (hasKing && hasQueen) roems.push({ type: 'stuk', points: 20, description: 'Heer + Vrouw van troef' });
-
-  for (const suit of SUITS) {
-    const suitCards = nonNull.filter(c => c.suit === suit).map(c => RANKS.indexOf(c.rank)).sort((a, b) => a - b);
-    let seqStart = 0;
-    while (seqStart < suitCards.length) {
-      let seqEnd = seqStart;
-      while (seqEnd + 1 < suitCards.length && suitCards[seqEnd + 1] === suitCards[seqEnd] + 1) seqEnd++;
-      const len = seqEnd - seqStart + 1;
-      if (len >= 3) roems.push({ type: 'sequence', points: len >= 4 ? 50 : 20, suit, length: len, description: `Reeks van ${len} in ${suit}` });
-      seqStart = seqEnd + 1;
-    }
-  }
-
-  for (const rank of RANKS) {
-    const count = nonNull.filter(c => c.rank === rank).length;
-    if (count === 3) roems.push({ type: 'three_of_a_kind', points: 20, rank, description: `Drie ${rank}s` });
-    if (count === 4) roems.push({ type: 'four_of_a_kind', points: 50, rank, description: `Vier ${rank}s` });
-  }
-
-  return roems;
-}
-
-function totalRoemPoints(roems) {
-  return roems.reduce((sum, r) => sum + r.points, 0);
+function detectStukInTrick(trick, trump) {
+  const cards = trick.map(t => t.card);
+  const hasKing  = cards.some(c => c.suit === trump && c.rank === 'K');
+  const hasQueen = cards.some(c => c.suit === trump && c.rank === 'Q');
+  return hasKing && hasQueen;
 }
 
 module.exports = {
   SUITS, RANKS, TRUMP_ORDER, NORMAL_ORDER,
   createDeck, shuffleDeck, dealStacks,
   cardValue, trickWinner, trickPoints,
-  getPlayableCards, validMoves, detectRoem, totalRoemPoints
+  getPlayableCards, validMoves, detectStukInTrick
 };

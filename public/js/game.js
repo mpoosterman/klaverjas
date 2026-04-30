@@ -91,7 +91,10 @@ $('btn-play-again').addEventListener('click', () => location.reload());
 // SOCKET EVENTS
 socket.on('gameState', state => { applyState(state); render(state); });
 socket.on('message', ({ text }) => showToast(text, 3000));
-socket.on('trickComplete', ({ winnerName }) => showToast(`${winnerName} wint de slag!`));
+socket.on('trickComplete', ({ winnerName, hasStuk }) => {
+  if (hasStuk) showToast(`${winnerName} wint de slag + 20pt stuk! 👑`, 3500);
+  else showToast(`${winnerName} wint de slag!`);
+});
 socket.on('roundOver', summary => {
   renderRoundSummary(summary);
   if (myState && myState.state === 'gameEnd') showModal('gameover');
@@ -235,10 +238,7 @@ function renderTrick(state) {
 }
 
 function renderRoem(state) {
-  const roem = state.myRoem || [];
-  if (!roem.length || !state.trump) { $('my-roem-display').textContent = ''; return; }
-  const total = roem.reduce((s, r) => s + r.points, 0);
-  $('my-roem-display').textContent = `Roem: ${roem.map(r => r.description).join(' · ')} = ${total} pt`;
+  $('my-roem-display').textContent = '';
 }
 
 function renderMiddle(state) {
@@ -281,20 +281,16 @@ function renderRoundSummary(summary) {
     : `${playingName} verliest — punten naar de tegenstander!`;
 
   let html = `<p style="color:var(--gold);margin-bottom:1rem;text-align:center;">${result}</p>`;
-  html += `<div class="summary-row"><span>Slagpunten</span><span>${summary.cardPoints[0]} – ${summary.cardPoints[1]}</span></div>`;
-  html += `<div class="summary-row"><span>Roempunten</span><span>${summary.roemPoints[0]} – ${summary.roemPoints[1]}</span></div>`;
+  html += `<div class="summary-row"><span>Punten ${names[0]}</span><span>${summary.cardPoints[0]}</span></div>`;
+  html += `<div class="summary-row"><span>Punten ${names[1]}</span><span>${summary.cardPoints[1]}</span></div>`;
+
+  if (summary.stukWon && (summary.stukWon[0] || summary.stukWon[1])) {
+    const stukWinner = summary.stukWon[0] ? names[0] : names[1];
+    html += `<div class="summary-row"><span>Stuk (K+V troef)</span><span>${stukWinner} +20pt ✓</span></div>`;
+  }
+
   html += `<div class="summary-row total"><span>Ronde score</span><span>${summary.roundScores[0]} – ${summary.roundScores[1]}</span></div>`;
   html += `<div class="summary-row total"><span>Totaal</span><span>${summary.totalScores[0]} – ${summary.totalScores[1]}</span></div>`;
-
-  if (summary.playerRoem && summary.playerRoem.some(p => p.roems.length > 0)) {
-    html += `<p style="margin-top:1rem;font-size:0.78rem;color:rgba(255,255,255,0.5);">Roem gedeclareerd:</p>`;
-    summary.playerRoem.forEach(p => {
-      if (p.roems.length > 0) {
-        const pts = p.roems.reduce((s, r) => s + r.points, 0);
-        html += `<div style="font-size:0.82rem;color:rgba(255,255,255,0.7);">${p.nickname}: ${p.roems.map(r => r.description).join(', ')} (${pts} pt)</div>`;
-      }
-    });
-  }
 
   $('round-summary').innerHTML = html;
 
