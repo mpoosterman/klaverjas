@@ -38,7 +38,6 @@ io.on('connection', (socket) => {
     socket.join(room.code);
     cb({ state: getPublicState(room, socket.id) });
     broadcast(room);
-
     if (room.players.length === 2) {
       startGame(room);
       broadcast(room);
@@ -51,7 +50,6 @@ io.on('connection', (socket) => {
     if (!room || !room.state.startsWith('bidding')) return cb && cb({ error: 'Kan nu geen troef kiezen' });
     const playerIndex = room.players.findIndex(p => p.id === socket.id);
     if (playerIndex !== room.game.biddingPlayerIndex) return cb && cb({ error: 'Jij kiest niet de troef' });
-
     chooseTrump(room, playerIndex, suit);
     const suitNL = { clubs: 'Klaveren', diamonds: 'Ruiten', hearts: 'Harten', spades: 'Schoppen' };
     io.to(room.code).emit('message', { text: `${room.players[playerIndex].nickname} kiest ${suitNL[suit]} als troef` });
@@ -59,31 +57,22 @@ io.on('connection', (socket) => {
     cb && cb({});
   });
 
-  socket.on('playCard', ({ position }, cb) => {
+  socket.on('playCard', ({ stackIndex }, cb) => {
     const room = getRoomBySocket(socket.id);
     if (!room || room.state !== 'playing') return cb && cb({ error: 'Kan nu niet spelen' });
     const playerIndex = room.players.findIndex(p => p.id === socket.id);
-
-    const result = playCard(room, playerIndex, position);
+    const result = playCard(room, playerIndex, stackIndex);
     if (result.error) return cb && cb({ error: result.error });
-
     broadcast(room);
-
     if (result.trickComplete) {
       const winnerName = room.players[result.winnerIdx].nickname;
-      io.to(room.code).emit('trickComplete', {
-        winnerIdx: result.winnerIdx,
-        winnerName,
-        trick: result.completedTrick
-      });
-
+      io.to(room.code).emit('trickComplete', { winnerIdx: result.winnerIdx, winnerName, trick: result.completedTrick });
       if (result.roundOver) {
         const summary = finalizeRound(room);
         io.to(room.code).emit('roundOver', summary);
         broadcast(room);
       }
     }
-
     cb && cb({});
   });
 

@@ -24,7 +24,7 @@ function showToast(text, ms = 2500) {
 function showModal(id)  { $(`modal-${id}`).classList.remove('hidden'); }
 function hideModal(id)  { $(`modal-${id}`).classList.add('hidden'); }
 
-// --- LOBBY TABS ---
+// LOBBY TABS
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -67,13 +67,13 @@ function showError(msg) {
   setTimeout(() => el.classList.add('hidden'), 3000);
 }
 
-// --- TRUMP READY BUTTON ---
+// TRUMP READY BUTTON
 $('btn-trump-ready').addEventListener('click', () => {
   $('btn-trump-ready').classList.add('hidden');
   showModal('bidding');
 });
 
-// --- TRUMP SUIT BUTTONS ---
+// TRUMP SUIT BUTTONS
 document.querySelectorAll('.suit-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     socket.emit('chooseTrump', { suit: btn.dataset.suit }, res => {
@@ -83,13 +83,12 @@ document.querySelectorAll('.suit-btn').forEach(btn => {
   });
 });
 
-// --- NEW ROUND ---
 $('btn-new-round').addEventListener('click', () => {
   socket.emit('newRound', () => hideModal('round'));
 });
 $('btn-play-again').addEventListener('click', () => location.reload());
 
-// --- SOCKET EVENTS ---
+// SOCKET EVENTS
 socket.on('gameState', state => { applyState(state); render(state); });
 socket.on('message', ({ text }) => showToast(text, 3000));
 socket.on('trickComplete', ({ winnerName }) => showToast(`${winnerName} wint de slag!`));
@@ -101,13 +100,12 @@ socket.on('roundOver', summary => {
 
 function applyState(state) { myState = state; }
 
-// --- MAIN RENDER ---
 function render(state) {
   if (!state) return;
   if (state.state === 'waiting') { showScreen('waiting'); renderWaiting(state); return; }
   showScreen('game');
   renderTopBar(state);
-  renderLayouts(state);
+  renderStacks(state);
   renderTrick(state);
   renderRoem(state);
   renderMiddle(state);
@@ -120,41 +118,32 @@ function renderWaiting(state) {
 }
 
 function renderTopBar(state) {
-  const names = playerNames(state);
+  const names = state.players.map(p => p.nickname);
   $('score-display').innerHTML = `
-    <div class="score-item"><span class="score-label">${names[0]}</span><span class="score-value">${state.scores[0]}</span></div>
-    <div class="score-item"><span class="score-label">${names[1]}</span><span class="score-value">${state.scores[1]}</span></div>
+    <div class="score-item"><span class="score-label">${names[0] || 'Speler 1'}</span><span class="score-value">${state.scores[0]}</span></div>
+    <div class="score-item"><span class="score-label">${names[1] || 'Speler 2'}</span><span class="score-value">${state.scores[1]}</span></div>
   `;
   $('trump-display').innerHTML = state.trump
     ? `Troef: <span style="color:${isRed(state.trump) ? '#ff8888' : '#fff'}">${suitSym(state.trump)} ${suitNL(state.trump)}</span>`
     : 'Troef kiezen…';
 
-  if (state.state === 'playing' && state.currentPlayerIndex !== null) {
+  if (state.state === 'playing') {
     const cur = state.players[state.currentPlayerIndex];
-    $('turn-display').textContent = cur.isMe ? 'Jouw beurt!' : `${cur.nickname} is aan de beurt`;
+    $('turn-display').textContent = cur ? (cur.isMe ? 'Jouw beurt!' : `${cur.nickname} is aan de beurt`) : '';
   } else {
     $('turn-display').textContent = '';
   }
 }
 
-// Layout: 16 cards per player
-// Positions 0-3: bottom layer row 0 (deepest)
-// Positions 4-7: bottom layer row 1
-// Positions 8-11: top layer row 0
-// Positions 12-15: top layer row 1 (closest, revealed first)
-//
-// Display as 4 cols x 4 rows grid:
-// Visual row 0 (top of grid) = position row 3 (12-15) — top layer row 1
-// Visual row 1              = position row 2 (8-11)  — top layer row 0
-// Visual row 2              = position row 1 (4-7)   — bottom layer row 1
-// Visual row 3 (bottom)     = position row 0 (0-3)   — bottom layer row 0
-// Visual divider between col 1 and col 2 to show "two stacks of 2"
-function renderLayouts(state) {
+// Render 4×2 stack grids
+// stacks[0-3] = top row (grid row 0), stacks[4-7] = bottom row (grid row 1)
+// Each stack shows its top visible card (top card if present, else bottom card if revealed)
+function renderStacks(state) {
   const isMyTurn = state.state === 'playing' && state.currentPlayerIndex === state.myIndex;
-  const validPos = new Set(state.myValidPositions || []);
+  const validSet = new Set(state.myValidStacks || []);
 
-  $('my-layout').innerHTML  = buildLayoutHTML(state.myLayout,  validPos, isMyTurn, state.trump);
-  $('opp-layout').innerHTML = buildLayoutHTML(state.oppLayout, new Set(), false, state.trump);
+  $('my-layout').innerHTML  = buildStacksHTML(state.myStacks,  validSet, isMyTurn, state.trump, true);
+  $('opp-layout').innerHTML = buildStacksHTML(state.oppStacks, new Set(), false, state.trump, false);
 
   const me  = state.players[state.myIndex];
   const opp = state.players[1 - state.myIndex];
@@ -163,42 +152,64 @@ function renderLayouts(state) {
   $('opp-label').textContent = opp ? opp.nickname : '';
   $('opp-label').className   = 'player-label' + (state.currentPlayerIndex === (1 - state.myIndex) ? ' active' : '');
 
+  // Click handlers
   $('my-layout').querySelectorAll('.card-face.playable').forEach(el => {
     el.addEventListener('click', () => {
-      socket.emit('playCard', { position: parseInt(el.dataset.position) }, res => {
+      socket.emit('playCard', { stackIndex: parseInt(el.dataset.stack) }, res => {
         if (res && res.error) showToast(res.error);
       });
     });
   });
 }
 
-function buildLayoutHTML(layout, validPos, isMyTurn, trump) {
-  if (!layout) return '';
-  const rowOrder = [3, 2, 1, 0]; // display top-to-bottom: row 3 first (top layer)
+// Build HTML for 4×2 grid of stacks
+// Grid order: row 0 = stacks 0-3, row 1 = stacks 4-7
+function buildStacksHTML(stacks, validSet, isMyTurn, trump, isMe) {
+  if (!stacks) return '';
   let html = '';
+  // Row 0: stacks 0-3, Row 1: stacks 4-7
+  const rowOrder = [[0,1,2,3], [4,5,6,7]];
   for (const row of rowOrder) {
-    for (let col = 0; col < 4; col++) {
-      const pos = row * 4 + col;
-      const card = layout[pos];
-      // Add visual gap between col 1 and col 2 to show two stacks
-      const marginLeft = col === 2 ? 'margin-left:10px;' : '';
-      html += cardHTML(card, pos, validPos.has(pos) && isMyTurn, trump, marginLeft);
+    for (const stackIdx of row) {
+      const stack = stacks[stackIdx];
+      html += stackCellHTML(stack, stackIdx, validSet.has(stackIdx) && isMyTurn, trump);
     }
   }
   return html;
 }
 
-function cardHTML(card, position, playable, trump, extraStyle = '') {
-  if (card === null) {
-    return `<div class="card card-empty" data-position="${position}" style="${extraStyle}"></div>`;
+function stackCellHTML(stack, stackIdx, playable, trump) {
+  if (!stack || stack.empty) {
+    return `<div class="card card-empty" data-stack="${stackIdx}"></div>`;
   }
-  if (!card.faceUp) {
-    return `<div class="card card-back" data-position="${position}" style="${extraStyle}"></div>`;
+
+  // Show top card if present, else bottom card
+  let card = null;
+  let isHidden = false;
+  let hasCardUnderneath = false;
+
+  if (stack.top !== null) {
+    card = stack.top;
+    isHidden = card.hidden || !stack.topFaceUp;
+    hasCardUnderneath = stack.bottom !== null;
+  } else if (stack.bottom !== null) {
+    card = stack.bottom;
+    isHidden = card.hidden || !stack.bottomFaceUp;
+    hasCardUnderneath = false;
   }
+
+  if (!card) return `<div class="card card-empty" data-stack="${stackIdx}"></div>`;
+
+  if (isHidden) {
+    return `<div class="card card-back${hasCardUnderneath ? ' card-with-bottom' : ''}" data-stack="${stackIdx}"></div>`;
+  }
+
   const red = isRed(card.suit) ? ' red' : '';
-  const tr  = card.suit === trump ? ' trump' : '';
+  const tr  = trump && card.suit === trump ? ' trump' : '';
   const pl  = playable ? ' playable' : '';
-  return `<div class="card card-face${red}${tr}${pl}" data-position="${position}" style="${extraStyle}">
+  const stackClass = hasCardUnderneath ? ' card-with-bottom' : '';
+
+  return `<div class="card card-face${red}${tr}${pl}${stackClass}" data-stack="${stackIdx}">
     <div class="corner corner-tl">${card.rank}<br>${suitSym(card.suit)}</div>
     <div class="card-center">${suitSym(card.suit)}</div>
     <div class="corner corner-br">${card.rank}<br>${suitSym(card.suit)}</div>
@@ -214,7 +225,7 @@ function renderTrick(state) {
     const tr  = state.trump && card.suit === state.trump ? ' trump' : '';
     return `<div class="played-wrap">
       <span class="played-by">${p ? p.nickname : ''}</span>
-      <div class="card card-face${red}${tr}" style="cursor:default;">
+      <div class="card card-face${red}${tr}" style="cursor:default;flex-shrink:0;">
         <div class="corner corner-tl">${card.rank}<br>${suitSym(card.suit)}</div>
         <div class="card-center">${suitSym(card.suit)}</div>
         <div class="corner corner-br">${card.rank}<br>${suitSym(card.suit)}</div>
@@ -230,7 +241,6 @@ function renderRoem(state) {
   $('my-roem-display').textContent = `Roem: ${roem.map(r => r.description).join(' · ')} = ${total} pt`;
 }
 
-// Show/hide the trump ready button and waiting message in the middle
 function renderMiddle(state) {
   const btn = $('btn-trump-ready');
   const waitMsg = $('waiting-trump-msg');
@@ -240,22 +250,23 @@ function renderMiddle(state) {
     if (bidder && bidder.isMe) {
       btn.classList.remove('hidden');
       waitMsg.classList.add('hidden');
+      // Fill bidding preview
+      const visible = (state.myStacks || [])
+        .filter(s => s && s.top && !s.top.hidden && s.topFaceUp)
+        .map(s => s.top);
+      $('bidding-preview').innerHTML = visible.map(card => {
+        const red = isRed(card.suit) ? ' red' : '';
+        return `<div class="card card-face${red}" style="cursor:default;width:50px;height:70px;">
+          <div class="corner corner-tl" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
+          <div class="card-center" style="font-size:1rem">${suitSym(card.suit)}</div>
+          <div class="corner corner-br" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
+        </div>`;
+      }).join('');
     } else {
       btn.classList.add('hidden');
       waitMsg.classList.remove('hidden');
       waitMsg.textContent = bidder ? `${bidder.nickname} kiest troef…` : '';
     }
-    // Pre-fill bidding modal preview
-    const visible = (state.myLayout || [])
-      .filter(c => c && c.faceUp);
-    $('bidding-preview').innerHTML = visible.map(card => {
-      const red = isRed(card.suit) ? ' red' : '';
-      return `<div class="card card-face${red}" style="cursor:default;width:50px;height:70px;">
-        <div class="corner corner-tl" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
-        <div class="card-center" style="font-size:1rem">${suitSym(card.suit)}</div>
-        <div class="corner corner-br" style="font-size:0.6rem">${card.rank}<br>${suitSym(card.suit)}</div>
-      </div>`;
-    }).join('');
   } else {
     btn.classList.add('hidden');
     waitMsg.classList.add('hidden');
@@ -263,7 +274,7 @@ function renderMiddle(state) {
 }
 
 function renderRoundSummary(summary) {
-  const names = myState ? playerNames(myState) : ['Speler 1', 'Speler 2'];
+  const names = myState ? myState.players.map(p => p.nickname) : ['Speler 1', 'Speler 2'];
   const playingName = names[summary.playingTeam];
   const result = summary.playingTeamWon
     ? `${playingName} wint de ronde! 🎉`
@@ -292,8 +303,4 @@ function renderRoundSummary(summary) {
     $('gameover-title').textContent = `${winner} wint het spel! 🏆`;
     $('gameover-summary').innerHTML = `<p style="color:rgba(255,255,255,0.7);margin-top:0.5rem;">Eindstand: ${summary.totalScores[0]} – ${summary.totalScores[1]}</p>`;
   }
-}
-
-function playerNames(state) {
-  return state.players.map(p => p.nickname);
 }
